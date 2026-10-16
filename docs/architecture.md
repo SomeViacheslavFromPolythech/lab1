@@ -1,80 +1,81 @@
-# Agent Architecture: AI Code Reviewer & pytest Generator
+# AI Agent Architecture
 
-This document defines the architecture, core modules, data flow, user commands, and error handling strategies for the **AI Code Reviewer & pytest Generator Agent**.
+## Purpose and scope
 
----
+The Build Engineer agent guides creation and verification of the lab's variant
+2 deliverable: a minimal Python Hello World application using `venv` and
+`pytest`, together with a repeatable local run/test path and cross-platform
+GitHub Actions CI. The agent configuration is instructional: Copilot Chat
+prompt files define the user-invoked operations, while skills provide reusable
+procedures. There is no separate executable agent or command-line orchestrator
+in this repository.
 
-## 1. Problems Solved by the Agent
+## Components
 
-1. **High Overhead in Manual Code Reviews:**
-   Automates static code analysis to instantly detect PEP 8 non-compliance, potential runtime errors, anti-patterns, and security code smells.
-2. **Low Unit Test Coverage:**
-   Eliminates the friction of manual test creation by automatically generating `pytest`-compliant test suites covering happy paths, edge cases, and exception handling.
-3. **Early Bug Identification:**
-   Executes generated tests in an isolated environment immediately after creation, detecting logical flaws prior to code merge or deployment.
-4. **Cross-Platform Execution Consistency:**
-   Ensures deterministic behavior and execution across Windows, Linux, and macOS environments through path abstraction and standardized environment invocation.
+| Component | Location | Responsibility |
+| --- | --- | --- |
+| Agent manifest | `.github/agents/build-engineer.agent.md` | Defines the agent's role, scope, safety rules, and completion criteria. |
+| Skills | `.github/skills/*/SKILL.md` | Define reusable scaffold, build/test, and CI procedures with inputs, outputs, validation, and failure behavior. |
+| Prompt commands | `.github/prompts/*.prompt.md` | Define user-invoked operations, their prerequisites, and actions. |
+| Command index | `.github/commands/COMMANDS.md` | Lists prompt commands and their shared safety and repeat-run rules. |
+| Application and tests | `src/`, `tests/` | Hold the generated Python application and its `pytest` tests. |
+| CI scripts and workflow | `ci.sh`, `ci.bat`, `.github/workflows/ci.yml` | Run setup/tests consistently on local machines and the three CI operating systems. |
 
----
+## Skills and data flow
 
-## 2. Agent Skills
+1. **`project-scaffold`** receives a project name, Python language, and target
+   directory. It creates the minimal Hello World source, project structure,
+   run instructions, and initial ignore rules. It reports the paths created
+   and a command to run the app.
+2. **`build-and-test`** receives the source layout, Python version, and chosen
+   dependency/test configuration. It defines `venv` setup, dependencies,
+   application run, and `pytest` execution, and creates a focused unit test.
+   Its result is the reproducible local test command and its verification
+   output.
+3. **`github-actions`** receives the local setup/test commands and agreed
+   target branches. It creates `ci.sh`, `ci.bat`, and a workflow matrix for
+   Ubuntu, Windows, and macOS. The workflow invokes the scripts instead of
+   duplicating project test logic in YAML.
 
-The agent uses a modular architecture where discrete tasks are encapsulated into reusable skills:
-
-| Skill Name | Responsibility | Input Data | Output Data |
-| :--- | :--- | :--- | :--- |
-| **`HelloSkill`** | Minimal status and health check verification skill used for basic environment validation and testing. | None or Command Args | Status String (`Hello World` payload) |
-| **`CodeParserSkill`** | Reads Python source files, builds Abstract Syntax Trees (AST), and extracts signatures, functions, and imports. | Source File Path (`pathlib.Path`) | `CodeContext` (JSON/AST metadata) |
-| **`CodeReviewSkill`** | Performs static code analysis, evaluates code metrics, and flags code smells or style violations. | `CodeContext` | `ReviewReport` (List of issues, severity, line numbers) |
-| **`TestGeneratorSkill`** | Synthesizes `pytest` test code based on extracted function signatures, edge cases, and fixtures. | `CodeContext`, `ReviewReport` | `TestCode` (`test_*.py` content) |
-| **`TestExecutorSkill`** | Invokes `pytest` in a cross-platform `subprocess`, captures execution logs, exit codes, and coverage metrics. | Path to test file | `ExecutionResult` (Status, stdout, stderr, coverage) |
-| **`ReportGeneratorSkill`** | Consolidates analysis and execution results into formatted user reports. | `ReviewReport`, `ExecutionResult` | `SummaryReport` (Markdown / CLI output) |
-
----
-
-## 3. User Commands
-
-Users interact with the agent using structured CLI commands:
-
-* **`/hello`** *(Minimal Initial Command)*  
-  Executes `HelloSkill` to verify orchestrator availability, environment setup, and CLI output sanity.
-* **`/review <path>`**  
-  Executes static code analysis on the specified `.py` file or directory and outputs a detailed review report.
-* **`/generate-tests <path>`**  
-  Generates `pytest` test suites and saves them inside the `tests/` directory without running them.
-* **`/run-tests <path>`**  
-  Triggers `pytest` execution for existing or generated test files and outputs stdout/stderr logs.
-* **`/run-all <path>`** *(Default Pipeline)*  
-  Executes the full end-to-end flow: Code Parsing -> Review -> Test Generation -> Test Execution -> Final Reporting.
-* **`/fix <path>`**  
-  Generates refactored code proposals addressing issues identified during code review or test execution failures.
-
----
-
-## 4. Data Flow Pipeline
-
-Data flows sequentially through the central Orchestrator, which manages state transitions between skills:
+The expected end-to-end flow is:
 
 ```text
-[User / CLI Input]
-        │
-        ▼
-1. Orchestrator (Command Parsing & Pipeline Control)
-        │
-        ├──► Command: /hello ──► [HelloSkill] ──► Status Message ("Hello World")
-        │
-        └──► Command: /run-all
-                 │
-                 ├─► [CodeParserSkill] ────► Output: CodeContext (AST / Signatures)
-                 │                                 │
-                 │                                 ▼
-                 ├─► [CodeReviewSkill] ────► Output: ReviewReport (Issues / Line numbers)
-                 │                                 │
-                 │                                 ▼
-                 ├─► [TestGeneratorSkill] ─► Output: Generated test_*.py file
-                 │                                 │
-                 │                                 ▼
-                 ├─► [TestExecutorSkill] ──► Output: ExecutionResult (Passed/Failed, Traceback)
-                 │                                 │
-                 │                                 ▼
-                 └─► [ReportGeneratorSkill]► Output: Final Markdown Summary Report
+User → /init → /git-init → /create-project → /create-build
+                         → /create-actions → /check
+                 prompts call the corresponding skills
+```
+
+Each stage reports its files and verification result to the orchestrating
+`/init` prompt. `/init` proceeds only after a successful stage and stops at the
+first missing prerequisite, conflict, or failed check. `/check` is read-only
+and reports `PASS`, `FAIL`, or `BLOCKED` for required areas; it must not repair
+files or install dependencies.
+
+## Commands
+
+| Command | Responsibility |
+| --- | --- |
+| `/git-init` | Confirm repository root, ensure Python/cache/build ignore rules, and report Git status. |
+| `/create-project` | Apply `project-scaffold` to create the Python Hello World starter. |
+| `/create-build` | Apply `build-and-test` to define environment setup and tests. |
+| `/create-actions` | Apply `github-actions` to add scripts and cross-platform CI. |
+| `/check` | Verify agent files, project, local checks, CI configuration, and repository hygiene without edits. |
+| `/init` | Run the preceding commands in order, including `/check`, stopping on failure. |
+
+## Safety and idempotency
+
+Commands inspect the repository before editing, preserve user files and
+unrelated changes, and add only missing outputs. A conflicting existing file
+must be reported instead of silently overwritten. Commands do not delete
+project files, expose secrets, install packages globally, commit, push, or
+rewrite Git history. A failed command or test remains a failure in the final
+report; later orchestration steps must not run after a failure.
+
+## Completion criteria
+
+The lab implementation is complete when the agent and all three skills are
+documented, all six prompt commands are available, the Python application and
+unit test run locally with the documented `venv`/`pytest` commands, and the
+workflow delegates to project scripts across Ubuntu, Windows, and macOS.
+Hosted CI success must be verified in GitHub Actions rather than inferred from
+local YAML inspection.
