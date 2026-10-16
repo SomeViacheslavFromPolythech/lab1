@@ -1,0 +1,34 @@
+name: Python CI
+
+on:
+  push:
+    branches:
+      - feature/init-application
+  pull_request:
+    branches:
+      - feature/init-application
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+        python-version:
+          - "3.x"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run CI script
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmd /c ci.bat
+          else
+            bash ci.sh
+          fi
